@@ -188,6 +188,13 @@
                         <tbody id="outputMasterBody"></tbody>
                     </table>
                 </div>
+                <div id="outputMasterPager" class="hidden mt-3 flex items-center justify-between gap-2 text-xs">
+                    <span id="outputMasterPageInfo" class="text-gray-500">Page 1</span>
+                    <div class="flex items-center gap-2">
+                        <button type="button" id="outputMasterPrevBtn" class="btn btn-ghost btn-xs">Prev</button>
+                        <button type="button" id="outputMasterNextBtn" class="btn btn-ghost btn-xs">Next</button>
+                    </div>
+                </div>
                 <p id="outputMasterNoMatch" class="hidden text-xs text-center text-gray-500 py-2 mb-2">No rows match your filter.</p>
                 <div id="userInputError" class="text-red-500 text-sm mb-1 min-h-[24px]"></div>
             </div>
@@ -306,6 +313,10 @@
     const outputMasterTableWrap = document.getElementById('outputMasterTableWrap');
     const outputMasterNoMatch = document.getElementById('outputMasterNoMatch');
     const outputMasterRefreshBtn = document.getElementById('outputMasterRefreshBtn');
+    const outputMasterPager = document.getElementById('outputMasterPager');
+    const outputMasterPageInfo = document.getElementById('outputMasterPageInfo');
+    const outputMasterPrevBtn = document.getElementById('outputMasterPrevBtn');
+    const outputMasterNextBtn = document.getElementById('outputMasterNextBtn');
 
     const verifyScannedBtn = document.getElementById('verifyScannedBtn');
     const rescanBtn = document.getElementById('rescanBtn');
@@ -332,10 +343,10 @@
     // ======================== API Configuration ========================
     const API_BASE_URL = window.location.origin;
     const VERIFY_ENDPOINT = "/api/verify/cross-check";
-    const MASTER_SELECTION_ENDPOINT = "/api/qr/selection/customers";
+    const MASTER_ROWS_ENDPOINT = "/api/qr/selection/rows";
     const VERIFICATION_LOGS_ENDPOINT = "/api/verification/logs";
     const FULL_API_URL = API_BASE_URL + VERIFY_ENDPOINT;
-    const MASTER_SELECTION_URL = API_BASE_URL + MASTER_SELECTION_ENDPOINT;
+    const MASTER_ROWS_URL = API_BASE_URL + MASTER_ROWS_ENDPOINT;
     const VERIFICATION_LOGS_URL = API_BASE_URL + VERIFICATION_LOGS_ENDPOINT;
     // Login page redirect URL (can be configured as needed)
     const LOGIN_REDIRECT_URL = "/login";
@@ -350,6 +361,16 @@
     let masterListRows = [];
     let selectedMasterIdx = null;
     let currentEmployee = null;
+
+    // Pagination state
+    let masterListMeta = {
+        page: 1,
+        page_size: 50,
+        total_rows: 0,
+        total_pages: 0,
+        has_prev: false,
+        has_next: false
+    };
 
     function loadCurrentEmployee() {
         try {
@@ -387,30 +408,38 @@
         return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
     }
 
-    function getFilteredMasterIndices() {
-        const q = (outputMasterSearch?.value || "").toLowerCase().trim();
-        if (!q) return masterListRows.map((_, i) => i);
-        return masterListRows
-            .map((r, i) => {
-                const hay = `${r.customer_name} ${r.item} ${r.part_name} ${r.maker}`.toLowerCase();
-                return hay.includes(q) ? i : -1;
-            })
-            .filter((i) => i >= 0);
+    function updateOutputMasterPager() {
+        const pager = document.getElementById("outputMasterPager");
+        const info = document.getElementById("outputMasterPageInfo");
+        const prevBtn = document.getElementById("outputMasterPrevBtn");
+        const nextBtn = document.getElementById("outputMasterNextBtn");
+        if (!pager || !info || !prevBtn || !nextBtn) return;
+        if (masterListMeta.total_rows <= 0) {
+            pager.classList.add("hidden");
+            return;
+        }
+        pager.classList.remove("hidden");
+        info.textContent = `Page ${masterListMeta.page} of ${masterListMeta.total_pages || 1} (${masterListMeta.total_rows} rows)`;
+        prevBtn.disabled = !masterListMeta.has_prev;
+        nextBtn.disabled = !masterListMeta.has_next;
     }
 
     function renderOutputMasterList() {
-        if (!outputMasterBody || !outputMasterNoMatch || !outputMasterTableWrap) return;
-        const indices = getFilteredMasterIndices();
-        if (selectedMasterIdx !== null && !indices.includes(selectedMasterIdx)) selectedMasterIdx = null;
-        outputMasterBody.innerHTML = "";
-        if (masterListRows.length === 0) return;
-        if (indices.length === 0) {
-            outputMasterNoMatch.classList.remove("hidden");
+        const tbody = document.getElementById("outputMasterBody");
+        const noMatch = document.getElementById("outputMasterNoMatch");
+        const wrap = document.getElementById("outputMasterTableWrap");
+        if (!tbody || !noMatch || !wrap) return;
+        if (selectedMasterIdx !== null && !masterListRows[selectedMasterIdx]) {
+            selectedMasterIdx = null;
+        }
+        tbody.innerHTML = "";
+        if (masterListRows.length === 0) {
+            noMatch.classList.remove("hidden");
+            updateOutputMasterPager();
             return;
         }
-        outputMasterNoMatch.classList.add("hidden");
-        indices.forEach((idx) => {
-            const r = masterListRows[idx];
+        noMatch.classList.add("hidden");
+        masterListRows.forEach((r, idx) => {
             const tr = document.createElement("tr");
             tr.className = "output-master-row" + (selectedMasterIdx === idx ? " output-master-row-selected" : "");
             tr.tabIndex = 0;
@@ -422,8 +451,9 @@
                     onOutputMasterRowSelected(idx);
                 }
             });
-            outputMasterBody.appendChild(tr);
+            tbody.appendChild(tr);
         });
+        updateOutputMasterPager();
     }
 
     async function onOutputMasterRowSelected(idx) {
@@ -432,36 +462,44 @@
         await switchToScannerScreen();
     }
 
-    async function loadOutputMasterList() {
-        if (!outputMasterLoading || !outputMasterError || !outputMasterEmpty || !outputMasterTableWrap) return;
-        outputMasterError.classList.add("hidden");
-        outputMasterEmpty.classList.add("hidden");
-        outputMasterTableWrap.classList.add("hidden");
-        outputMasterNoMatch?.classList.add("hidden");
-        outputMasterLoading.classList.remove("hidden");
+    async function loadOutputMasterList(page = 1) {
+        const loading = document.getElementById("outputMasterLoading");
+        const errBox = document.getElementById("outputMasterError");
+        const empty = document.getElementById("outputMasterEmpty");
+        const wrap = document.getElementById("outputMasterTableWrap");
+        const noMatch = document.getElementById("outputMasterNoMatch");
+        if (!loading || !errBox || !empty || !wrap) return;
+        loading.classList.remove("hidden");
+        errBox.classList.add("hidden");
+        empty.classList.add("hidden");
+        wrap.classList.add("hidden");
+        noMatch.classList.add("hidden");
+        document.getElementById("outputMasterBody").innerHTML = "";
         try {
-            const resp = await fetch(MASTER_SELECTION_URL, { method: "GET", headers: { Accept: "application/json" } });
+            const searchValue = (document.getElementById("outputMasterSearch")?.value || "").trim();
+            const params = new URLSearchParams({
+                page: String(page),
+                page_size: String(masterListMeta.page_size),
+                search: searchValue,
+            });
+            const resp = await fetch(`${MASTER_ROWS_URL}?${params.toString()}`, { method: "GET", headers: { Accept: "application/json" } });
             if (!resp.ok) throw new Error("Server returned " + resp.status);
             const data = await resp.json();
-            masterListRows = flattenCustomersToMasterRows(Array.isArray(data) ? data : []);
-            outputMasterLoading.classList.add("hidden");
+            masterListRows = Array.isArray(data.rows) ? data.rows : [];
+            masterListMeta = data.pagination || masterListMeta;
+            loading.classList.add("hidden");
             selectedMasterIdx = null;
             if (masterListRows.length === 0) {
-                outputMasterEmpty.classList.remove("hidden");
+                empty.classList.remove("hidden");
                 renderOutputMasterList();
                 return;
             }
-            outputMasterTableWrap.classList.remove("hidden");
+            wrap.classList.remove("hidden");
             renderOutputMasterList();
         } catch (e) {
-            outputMasterLoading.classList.add("hidden");
-            outputMasterError.classList.remove("hidden");
-            outputMasterErrorMsg.textContent = e.message || "Could not load master list.";
-            if (masterListRows.length > 0) {
-                outputMasterEmpty.classList.add("hidden");
-                outputMasterTableWrap.classList.remove("hidden");
-                renderOutputMasterList();
-            }
+            loading.classList.add("hidden");
+            errBox.classList.remove("hidden");
+            document.getElementById("outputMasterErrorMsg").textContent = e.message || "Could not load master list.";
         }
     }
 
@@ -861,8 +899,14 @@
     }
 
     // Event Bindings
-    outputMasterSearch?.addEventListener("input", () => renderOutputMasterList());
-    outputMasterRefreshBtn?.addEventListener("click", () => loadOutputMasterList());
+    outputMasterSearch?.addEventListener("input", () => loadOutputMasterList(1));
+    outputMasterRefreshBtn?.addEventListener("click", () => loadOutputMasterList(masterListMeta.page));
+    outputMasterPrevBtn?.addEventListener("click", () => {
+        if (masterListMeta.has_prev) loadOutputMasterList(masterListMeta.page - 1);
+    });
+    outputMasterNextBtn?.addEventListener("click", () => {
+        if (masterListMeta.has_next) loadOutputMasterList(masterListMeta.page + 1);
+    });
     verifyScannedBtn.addEventListener('click', callCrossVerificationAPI);
     rescanBtn.addEventListener('click', rescan);
     backToUserFromScannerBtn.addEventListener('click', backToUserInput);
