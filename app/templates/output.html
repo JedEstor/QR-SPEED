@@ -82,6 +82,14 @@
         .output-master-row { cursor: pointer; transition: background 0.15s ease; }
         .output-master-row:hover { background: #f3f4f6; }
         .output-master-row-selected { background: #dbeafe !important; }
+        @media (max-width: 640px) {
+            #scannerScreen .flex.gap-3 {
+                flex-direction: column;
+            }
+            #scannerScreen .flex.gap-3 > button {
+                width: 100%;
+            }
+        }
     </style>
 </head>
 <body class="font-sans antialiased flex flex-col items-center justify-start p-4 md:p-6">
@@ -232,6 +240,13 @@
                         <i class="fas fa-sync-alt"></i> Rescan
                     </button>
                 </div>
+                <div class="mt-2">
+                    <button id="scanImageBtn"
+                            class="w-full bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium py-2.5 rounded-xl border border-slate-300 transition flex items-center justify-center gap-2">
+                        <i class="fas fa-image"></i> Scan From QR Image
+                    </button>
+                    <input id="scanImageInput" type="file" accept="image/*" class="hidden">
+                </div>
 
                 <button id="backToUserFromScannerBtn"
                         class="w-full mt-3 text-gray-500 hover:text-gray-700 text-sm border border-gray-200 py-2.5 rounded-xl transition hover:bg-gray-50 flex items-center justify-center gap-1">
@@ -320,6 +335,8 @@
 
     const verifyScannedBtn = document.getElementById('verifyScannedBtn');
     const rescanBtn = document.getElementById('rescanBtn');
+    const scanImageBtn = document.getElementById('scanImageBtn');
+    const scanImageInput = document.getElementById('scanImageInput');
     const backToUserFromScannerBtn = document.getElementById('backToUserFromScannerBtn');
     const scannerStatus = document.getElementById('scannerStatus');
     const scannedDataPreview = document.getElementById('scannedDataPreview');
@@ -643,6 +660,56 @@
         }
     }
 
+    function updateScannedPreview(parsedData) {
+        scannedQRData = parsedData;
+        scannerStatus.innerHTML = '<span class="text-green-600"><i class="fas fa-check-circle"></i> QR code scanned successfully!</span>';
+        scannedDataContent.innerHTML = `
+            <div class="grid grid-cols-2 gap-1 text-xs">
+                <span class="font-semibold text-gray-600">QR UUID:</span>
+                <span class="font-mono text-blue-700 break-all">${scannedQRData.qr_uuid}</span>
+                <span class="font-semibold text-gray-600">Item:</span>
+                <span>${scannedQRData.item}</span>
+                <span class="font-semibold text-gray-600">Part Name:</span>
+                <span>${scannedQRData.part.name}</span>
+                <span class="font-semibold text-gray-600">Part Maker:</span>
+                <span>${scannedQRData.part.maker || 'N/A'}</span>
+                <span class="font-semibold text-gray-600">Lot No:</span>
+                <span>${scannedQRData.lot_no}</span>
+            </div>`;
+        scannedDataPreview.classList.remove('hidden');
+        verifyScannedBtn.disabled = false;
+        setFooterMessage('QR scanned. Ready for verification.');
+    }
+
+    function canUseCameraOnThisOrigin() {
+        const host = window.location.hostname;
+        const localhostHosts = ['localhost', '127.0.0.1', '::1'];
+        return window.isSecureContext || localhostHosts.includes(host);
+    }
+
+    async function requestCameraPermissionOnce() {
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return;
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: false });
+            stream.getTracks().forEach(track => track.stop());
+        } catch (e) {
+            console.warn("Camera preflight permission request failed:", e);
+        }
+    }
+
+    async function pickBestRearCamera() {
+        try {
+            const devices = await Html5Qrcode.getCameras();
+            if (!Array.isArray(devices) || devices.length === 0) return { facingMode: "environment" };
+            const rearKeywords = /back|rear|environment|wide|ultra/i;
+            const rearCam = devices.find(d => rearKeywords.test(`${d.label || ""}`));
+            return rearCam?.id || devices[0].id || { facingMode: "environment" };
+        } catch (e) {
+            console.warn("Camera enumeration failed, falling back to environment mode.", e);
+            return { facingMode: "environment" };
+        }
+    }
+
     async function startScanner() {
         if (html5QrCode) {
             try { await html5QrCode.stop(); } catch (e) { console.warn(e); }
@@ -657,55 +724,44 @@
             isProcessingScan = true;
             const parsedData = parseQRData(decodedText);
             if (parsedData) {
-                scannedQRData = parsedData;
+                updateScannedPreview(parsedData);
                 try {
                     await html5QrCode.pause(true);
                     isScanning = false;
                 } catch (err) {
                     console.warn('Failed to pause scanner', err);
                 }
-                scannerStatus.innerHTML = '<span class="text-green-600"><i class="fas fa-check-circle"></i> QR code scanned successfully!</span>';
-                scannedDataContent.innerHTML = `
-                    <div class="grid grid-cols-2 gap-1 text-xs">
-                        <span class="font-semibold text-gray-600">QR UUID:</span>
-                        <span class="font-mono text-blue-700 break-all">${scannedQRData.qr_uuid}</span>
-                        <span class="font-semibold text-gray-600">Item:</span>
-                        <span>${scannedQRData.item}</span>
-                        <span class="font-semibold text-gray-600">Part Name:</span>
-                        <span>${scannedQRData.part.name}</span>
-                        <span class="font-semibold text-gray-600">Part Maker:</span>
-                        <span>${scannedQRData.part.maker || 'N/A'}</span>
-                        <span class="font-semibold text-gray-600">Lot No:</span>
-                        <span>${scannedQRData.lot_no}</span>
-                    </div>`;
-                scannedDataPreview.classList.remove('hidden');
-                verifyScannedBtn.disabled = false;
-                setFooterMessage('QR scanned. Ready for verification.');
             } else {
                 scannerStatus.innerHTML = '<span class="text-red-500"><i class="fas fa-exclamation-triangle"></i> Invalid QR format. Please scan a valid verification QR code.</span>';
                 setTimeout(() => { if (isScanning) scannerStatus.innerHTML = ''; }, 4000);
             }
             isProcessingScan = false;
         };
+        const qrBoxSize = Math.min(320, Math.max(200, Math.floor(window.innerWidth * 0.62)));
         const config = {
-            fps: 15,
-            qrbox: { width: 350, height: 350 },
+            fps: 22,
+            qrbox: { width: qrBoxSize, height: qrBoxSize },
             aspectRatio: 1.0,
-            disableFlip: false,
+            disableFlip: true,
             formatsToSupport: [Html5QrcodeSupportedFormats.QR_CODE],
             rememberLastUsedCamera: true,
             showTorchButtonIfSupported: true,
             showZoomSliderIfSupported: true,
-            defaultZoomValueIfSupported: 1.2,
+            defaultZoomValueIfSupported: 1.0,
             experimentalFeatures: { useBarCodeDetectorIfSupported: true },
             videoConstraints: {
                 facingMode: "environment",
-                width: { ideal: 1920, max: 3840 },
-                height: { ideal: 1080, max: 2160 }
+                width: { ideal: 1280, max: 1920 },
+                height: { ideal: 720, max: 1080 }
             }
         };
         try {
-            await html5QrCode.start({ facingMode: "environment" }, config, qrCodeSuccessCallback);
+            if (!canUseCameraOnThisOrigin()) {
+                throw new Error("Camera is blocked on HTTP (192.168.x.x). Open via HTTPS, or use 'Scan From QR Image'.");
+            }
+            await requestCameraPermissionOnce();
+            const preferredCamera = await pickBestRearCamera();
+            await html5QrCode.start(preferredCamera, config, qrCodeSuccessCallback);
             isScanning = true;
             scannerStatus.innerHTML = '<span class="text-blue-600"><i class="fas fa-camera"></i> Camera active. Scan QR code...</span>';
             setFooterMessage('Camera active - position QR code in frame');
@@ -909,6 +965,25 @@
     });
     verifyScannedBtn.addEventListener('click', callCrossVerificationAPI);
     rescanBtn.addEventListener('click', rescan);
+    scanImageBtn?.addEventListener('click', () => scanImageInput?.click());
+    scanImageInput?.addEventListener('change', async (event) => {
+        const file = event.target?.files?.[0];
+        event.target.value = '';
+        if (!file) return;
+        await stopScanner();
+        try {
+            const imageScanner = new Html5Qrcode("qr-reader");
+            const decodedText = await imageScanner.scanFile(file, true);
+            await imageScanner.clear();
+            const parsedData = parseQRData(decodedText);
+            if (!parsedData) throw new Error("Invalid QR format in selected image.");
+            updateScannedPreview(parsedData);
+            scannerStatus.innerHTML = '<span class="text-green-600"><i class="fas fa-image"></i> QR scanned from image successfully.</span>';
+        } catch (error) {
+            scannerStatus.innerHTML = `<span class="text-red-500"><i class="fas fa-exclamation-triangle"></i> ${error.message || 'Could not decode QR from image.'}</span>`;
+            setFooterMessage('Image QR scan failed', true);
+        }
+    });
     backToUserFromScannerBtn.addEventListener('click', backToUserInput);
     newVerificationBtn.addEventListener('click', fullReset);
     forceLogoutBtn.addEventListener('click', confirmLogout);
